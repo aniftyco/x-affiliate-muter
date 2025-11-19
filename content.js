@@ -1,13 +1,11 @@
 // =============================
-// STATE
+// STATE & SNIFFER
 // =============================
 
 let authBearer = null;
 
-// =============================
-// INJECT SNIFFER INTO PAGE
-// =============================
-
+// Inject sniffer script into the page context to capture the
+// Authorization bearer token X uses for its own API calls.
 function injectSniffer() {
   try {
     const script = document.createElement("script");
@@ -40,11 +38,6 @@ window.addEventListener("message", (event) => {
 // UTILITIES
 // =============================
 
-function getCsrfTokenFromCookies() {
-  const match = document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -59,6 +52,11 @@ function getCurrentPath() {
 
 function log(...args) {
   console.log("[Affiliate Muter]", ...args);
+}
+
+function getCsrfTokenFromCookies() {
+  const match = document.cookie.match(/(?:^|;\s*)ct0=([^;]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 async function waitForAuth(maxWaitMs = 10000) {
@@ -91,25 +89,19 @@ function injectMuteButton() {
 
   if (document.querySelector("#affiliate-muter-button")) return;
 
-  const possibleNavs = document.querySelectorAll(
-    'nav[role="navigation"], div[role="tablist"]'
+  // Try to find the main affiliates list section as the anchor
+  const affiliatesSection = document.querySelector(
+    'section[role="region"][aria-labelledby^="accessible-list-"]'
   );
-  let nav = null;
-  for (const n of possibleNavs) {
-    if (n.textContent && n.textContent.includes("Affiliates")) {
-      nav = n;
-      break;
-    }
-  }
 
-  if (!nav) {
-    log("Affiliates nav not found yet.");
+  if (!affiliatesSection) {
+    log("Affiliates section not found yet.");
     return;
   }
 
   const btn = document.createElement("button");
   btn.id = "affiliate-muter-button";
-  btn.textContent = "Mute all affiliates";
+  btn.textContent = "Mute All";
   btn.style.marginLeft = "8px";
   btn.style.padding = "4px 8px";
   btn.style.borderRadius = "9999px";
@@ -119,21 +111,53 @@ function injectMuteButton() {
   btn.style.cursor = "pointer";
   btn.style.fontSize = "13px";
 
+  const container = document.createElement("div");
+  container.style.display = "flex";
+  container.style.justifyContent = "flex-end";
+  container.style.marginBottom = "8px";
+  container.appendChild(btn);
+
   btn.addEventListener("click", async () => {
     try {
+      const targets = collectAffiliateTargets();
+      if (!targets.length) {
+        alert(
+          "No affiliate handles found on this page (or they haven't fully loaded yet). Try scrolling or waiting a moment, then click again."
+        );
+        return;
+      }
+
+      const handles = targets.map((t) => t.handle);
+
+      if (
+        !confirm(
+          `Found ${handles.length} affiliate accounts. Mute them all? This will call X's mute API for each.`
+        )
+      ) {
+        return;
+      }
+
+      log("Will mute affiliates:", handles);
+
       btn.disabled = true;
-      btn.textContent = "Muting...";
-      await muteAllAffiliates();
+      btn.textContent = "Muting affiliates...";
+
+      await muteAllAffiliates(targets);
+
+      alert(
+        "Finished attempting to mute all affiliates. Check console for details / errors."
+      );
       btn.textContent = "Done muting affiliates";
     } catch (e) {
       console.error(e);
       alert("Error while muting affiliates. Check console for details.");
-      btn.textContent = "Mute all affiliates";
+      btn.textContent = "Mute All";
+    } finally {
       btn.disabled = false;
     }
   });
 
-  nav.appendChild(btn);
+  affiliatesSection.insertBefore(container, affiliatesSection.firstChild);
   log("Injected mute button.");
 }
 
@@ -141,54 +165,47 @@ function injectMuteButton() {
 // SCRAPE AFFILIATES
 // =============================
 
-function collectAffiliateHandles() {
-  const handles = new Set();
+function collectAffiliateTargets() {
+  const targetsByHandle = new Map();
 
-  const main = document.querySelector("main") || document.body;
+  const affiliatesSection =
+    document.querySelector(
+      'section[role="region"][aria-labelledby^="accessible-list-"]'
+    ) ||
+    document.querySelector("main") ||
+    document.body;
 
-  const links = main.querySelectorAll(
-    "a[href^='https://x.com/'], a[href^='/']"
+  const followButtons = affiliatesSection.querySelectorAll(
+    "button[aria-label*='@'][data-testid*='-follow']"
   );
-  for (const a of links) {
-    let href = a.getAttribute("href");
-    if (!href) continue;
 
-    try {
-      if (href.startsWith("http")) {
-        const u = new URL(href);
-        if (u.hostname !== "x.com" && u.hostname !== "twitter.com") continue;
-        href = u.pathname;
-      }
-    } catch {
-      // ignore
+  for (const btn of followButtons) {
+    const label = btn.getAttribute("aria-label") || "";
+    if (!label) continue;
+
+    if (!/Follow/i.test(label) && !/Following/i.test(label)) continue;
+
+    const handleMatch = label.match(/@([A-Za-z0-9_]{1,50})/);
+    if (!handleMatch) continue;
+
+    const handle = handleMatch[1];
+
+    const dataTestId = btn.getAttribute("data-testid") || "";
+    const idMatch = dataTestId.match(/^(\d+)-/);
+    if (!idMatch) continue;
+
+    const userId = idMatch[1];
+
+    if (!targetsByHandle.has(handle)) {
+      targetsByHandle.set(handle, { handle, userId });
     }
-
-    if (!href.startsWith("/")) continue;
-    const parts = href.split("/").filter(Boolean);
-
-    if (parts.length !== 1) continue;
-
-    if (
-      [
-        "home",
-        "i",
-        "explore",
-        "notifications",
-        "messages",
-        "settings",
-      ].includes(parts[0].toLowerCase())
-    ) {
-      continue;
-    }
-
-    const handle = parts[0];
-
-    if (!/^[A-Za-z0-9_]{1,50}$/.test(handle)) continue;
-
-    handles.add(handle);
   }
 
-  return Array.from(handles);
+  return Array.from(targetsByHandle.values());
+}
+
+function collectAffiliateHandles() {
+  return collectAffiliateTargets().map((t) => t.handle);
 }
 
 // =============================
@@ -209,86 +226,42 @@ function buildHeaders(bearer, csrfToken) {
     "x-twitter-active-user": "yes",
     "x-twitter-auth-type": "OAuth2Session",
     "x-twitter-client-language": "en",
-    "content-type": "application/json",
+    "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
   };
 }
 
-async function fetchUserIdForHandle(handle, headers) {
-  const url = `https://x.com/i/api/2/users/by/username/${encodeURIComponent(
-    handle
-  )}?withSafetyModeUserFields=true&with_disabled_community=false`;
-
-  const res = await fetch(url, {
-    method: "GET",
-    credentials: "include",
-    headers,
-  });
-
-  if (!res.ok) {
-    throw new Error(`Failed to get user id for @${handle}: ${res.status}`);
-  }
-
-  const data = await res.json();
-  if (!data || !data.data || !data.data.id) {
-    throw new Error(`No id in response for @${handle}`);
-  }
-
-  return data.data.id;
-}
-
-async function muteUserId(userId, headers) {
+async function muteUserId(userId, handle, headers) {
   const url = "https://x.com/i/api/1.1/mutes/users/create.json";
 
-  const body = {
-    user_id: userId,
-  };
+  const body = `user_id=${encodeURIComponent(userId)}`;
 
   const res = await fetch(url, {
     method: "POST",
     credentials: "include",
     headers,
-    body: JSON.stringify(body),
+    body,
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to mute user ${userId}: ${res.status}`);
+    throw new Error(`Failed to mute @${handle}: ${res.status}`);
   }
 
   const data = await res.json();
   return data;
 }
 
-// =============================
-// MAIN WORKFLOW
-// =============================
-
-async function muteAllAffiliates() {
+async function muteAllAffiliates(targets) {
   const bearer = await waitForAuth();
   const csrf = getCsrfTokenFromCookies();
   const headers = buildHeaders(bearer, csrf);
 
-  const handles = collectAffiliateHandles();
-  if (!handles.length) {
-    alert(
-      "No affiliate handles found on this page (or they haven't fully loaded yet). Try scrolling or waiting a moment, then click again."
-    );
-    return;
-  }
+  const total = targets.length;
 
-  if (!confirm(`Found ${handles.length} affiliate accounts. Mute them all?`)) {
-    return;
-  }
-
-  log("Will mute affiliates:", handles);
-
-  for (let i = 0; i < handles.length; i++) {
-    const handle = handles[i];
+  for (let i = 0; i < total; i++) {
+    const { handle, userId } = targets[i];
     try {
-      log(`(${i + 1}/${handles.length}) Getting user id for @${handle}`);
-      const userId = await fetchUserIdForHandle(handle, headers);
-
-      log(`Muting user id ${userId} (@${handle})`);
-      await muteUserId(userId, headers);
+      log(`(${i + 1}/${total}) Muting @${handle}`);
+      await muteUserId(userId, handle, headers);
 
       await sleep(750);
     } catch (err) {
@@ -296,10 +269,6 @@ async function muteAllAffiliates() {
       await sleep(500);
     }
   }
-
-  alert(
-    "Finished attempting to mute all affiliates. Check console for details / errors."
-  );
 }
 
 // =============================
