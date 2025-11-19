@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "X Affiliate Muter",
+  "version": "0.1.0",
+  "description": "On a company's Affiliates tab, add a button that mutes all affiliates.",
+  "permissions": [],
+  "host_permissions": ["https://x.com/*", "https://twitter.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["sniffer.js"],
+      "matches": ["https://x.com/*", "https://twitter.com/*"]
+    }
+  ]
+}
